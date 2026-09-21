@@ -1,0 +1,118 @@
+name: esy CI
+
+on:
+  pull_request:
+  push:
+   branches:
+     - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-26-intel
+          - windows-latest
+
+        ocaml-compiler:
+          - 4.14.x
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Set up MinGW (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco upgrade mingw -y --no-progress
+          echo "C:\ProgramData\mingw64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install esy
+        run: npm install -g esy@0.9.0-beta.1
+
+      - name: Restore global cache (~/.esy/source)
+        id: global-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.esy/source
+          key: v0.0.2-esy-source-${{ matrix.os }}-${{ matrix.ocaml-compiler }}-${{ hashFiles('esy.lock.json') }}
+
+      - name: Print esy cache
+        id: print_esy_cache
+        run: echo "ESY_CACHE=$(node .github/workflows/print-esy-cache.js)" >> $GITHUB_OUTPUT;
+
+      - name: Load dependencies cache
+        id: deps-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.print_esy_cache.outputs.ESY_CACHE }}
+            _export
+          key: v0.0.2-esy-build-${{ matrix.os }}-${{ matrix.ocaml-compiler }}-${{ hashFiles('esy.lock.json') }}
+          restore-keys: v0.0.2-esy-build-${{ matrix.os }}-
+
+      - name: Install dependencies
+        run: esy install
+
+      - name: Import dependencies
+        if: steps.deps-cache.outputs.cache-hit == 'true'
+        # Don't crash the run if esy cache import fails - mostly happens on Windows
+        continue-on-error: true
+        run: |
+          esy import-dependencies _export
+          rm -rf _export
+
+      - name: Build dependencies
+        run: esy build-dependencies
+
+      - name: Build
+        run: esy build
+
+      - name: Test when not Windows
+        if: runner.os != 'Windows'
+        run: esy dune runtest
+
+      - name: Test when Windows
+        if: runner.os == 'Windows'
+        run: esy b dune runtest -p "reason,rtop"
+
+      - name: Export dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: esy export-dependencies
+
+      - name: Save global cache
+        uses: actions/cache/save@v6
+        if: steps.global-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.esy/source
+          key: v0.0.2-esy-source-${{ matrix.os }}-${{ matrix.ocaml-compiler }}-${{ hashFiles('esy.lock.json') }}
+
+      - name: Save dependencies cache
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.print_esy_cache.outputs.ESY_CACHE }}
+            _export
+          key: v0.0.2-esy-build-${{ matrix.os }}-${{ matrix.ocaml-compiler }}-${{ hashFiles('esy.lock.json') }}
+
+      # Cleanup build cache in case dependencies have changed
+      - name: Cleanup
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: esy cleanup .

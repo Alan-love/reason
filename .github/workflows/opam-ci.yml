@@ -1,0 +1,112 @@
+name: opam CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+    tags:
+      - '*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    strategy:
+      fail-fast: false
+      matrix:
+        setup:
+          - {ocaml-compiler: 'ocaml-base-compiler.4.08.1', os: ubuntu-latest, opam-repositories: 'default: git+https://github.com/ocaml/opam-repository.git#622e2cd03db68197f7299596fa614b2f91aa9260'}
+          - {ocaml-compiler: 'ocaml-base-compiler.4.10.2', os: ubuntu-latest, opam-repositories: 'default: git+https://github.com/ocaml/opam-repository.git#622e2cd03db68197f7299596fa614b2f91aa9260'}
+          - {ocaml-compiler: '4.12.x', os: ubuntu-latest}
+          - {ocaml-compiler: '4.13.x', os: ubuntu-latest}
+          - {ocaml-compiler: '4.14.x', os: ubuntu-latest}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.3.0', os: ubuntu-latest}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.4.0', os: ubuntu-latest}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.5.1', os: ubuntu-latest}
+          - {ocaml-compiler: 'ocaml-variants.5.6.0+trunk', os: ubuntu-latest}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.4.0', os: macos-26-intel}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.4.0', os: macos-latest}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.5.1', os: macos-latest}
+          - {ocaml-compiler: 'ocaml-variants.5.6.0+trunk', os: macos-latest}
+            # looks like setup-ocaml@v3 can only run actions on windows for
+            # OCaml >= 4.13
+            # https://github.com/ocaml/setup-ocaml/issues/822#issuecomment-2215525942
+          - {ocaml-compiler: '4.14.x', os: windows-latest}
+          - {ocaml-compiler: 'ocaml-base-compiler.5.5.1', os: windows-latest}
+          - {ocaml-compiler: 'ocaml-variants.5.6.0+trunk', os: windows-latest}
+
+    runs-on: ${{ matrix.setup.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Use OCaml ${{ matrix.setup.ocaml-compiler }}
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.setup.ocaml-compiler }}
+          opam-repositories: "${{ matrix.setup.opam-repositories || 'default: git+https://github.com/ocaml/opam-repository.git' }}"
+          opam-pin: true
+
+      - name: Load opam cache when not Windows
+        if: runner.os != 'Windows'
+        id: opam-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.opam
+          key: v0.0.1-opam-${{ matrix.setup.os }}-${{ matrix.setup.ocaml-compiler }}-${{ hashFiles('*.opam') }}
+
+      - name: Load opam cache when Windows
+        if: runner.os == 'Windows'
+        id: opam-cache-windows
+        uses: actions/cache/restore@v6
+        with:
+          path: _opam
+          key: v0.0.1-opam-${{ matrix.setup.os }}-${{ matrix.setup.ocaml-compiler }}-${{ hashFiles('**.opam') }}
+
+      - name: Pin ppxlib for OCaml 5.6
+        if: ${{ matrix.setup.ocaml-compiler == 'ocaml-variants.5.6.0+trunk' }}
+        run: opam pin add ppxlib https://github.com/ocaml-ppx/ppxlib/archive/377fee7793ee12d82772c619efee7985ea31f53f.tar.gz
+
+      - name: Pin utop for OCaml 5.6
+        if: ${{ matrix.setup.ocaml-compiler == 'ocaml-variants.5.6.0+trunk' }}
+        run: opam pin add utop https://github.com/anmonteiro/utop/archive/4c1559fd702fedc315fa9d8fb972411a12d93f7c.tar.gz
+
+      - name: Install dependencies
+        run: opam install . --deps-only
+
+      - name: Build reason and rtop
+        run: opam exec -- dune build -p reason,rtop
+
+      - name: Test
+        run: opam exec -- dune runtest -p reason,rtop
+
+      - name: Install dune-release
+        if: startsWith(github.ref, 'refs/tags/') && matrix.setup.os == 'ubuntu-latest' && matrix.setup.ocaml-compiler == 'ocaml-base-compiler.5.4.0'
+        run: opam install dune-release -y
+
+      - name: Release to opam
+        uses: davesnx/dune-release-action@v0.4.0
+        if: startsWith(github.ref, 'refs/tags/') && matrix.setup.os == 'ubuntu-latest' && matrix.setup.ocaml-compiler == 'ocaml-base-compiler.5.4.0'
+        with:
+          packages: 'reason,rtop'
+          changelog: './CHANGES.md'
+          github-token: ${{ secrets.GH_TOKEN }}
+
+      - name: Save cache when not Windows
+        uses: actions/cache/save@v6
+        if: steps.opam-cache.outputs.cache-hit != 'true' && runner.os != 'Windows'
+        with:
+          path: ~/.opam
+          key: v0.0.1-opam-${{ matrix.setup.os }}-${{ matrix.setup.ocaml-compiler }}-${{ hashFiles('**.opam') }}
+
+      - name: Save cache when Windows
+        uses: actions/cache/save@v6
+        if: steps.opam-cache-windows.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        with:
+          path: _opam
+          key: v0.0.1-opam-${{ matrix.setup.os }}-${{ matrix.setup.ocaml-compiler }}-${{ hashFiles('**.opam') }}

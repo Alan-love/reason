@@ -1,30 +1,45 @@
 {
   description = "Nix Flake for ReasonML";
 
-  inputs.nix-filter.url = "github:numtide/nix-filter";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
   inputs.nixpkgs.url = "github:nix-ocaml/nix-overlays";
-  inputs.nixpkgs.inputs.flake-utils.follows = "flake-utils";
 
-  outputs = { self, nixpkgs, flake-utils, nix-filter }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = nixpkgs.legacyPackages."${system}".extend (self: super: {
-          ocamlPackages = super.ocaml-ng.ocamlPackages_5_0;
-        });
-      in
-      rec {
-        packages.default = pkgs.callPackage ./nix {
-          nix-filter = nix-filter.lib;
+  outputs =
+    { self, nixpkgs }:
+    let
+      forAllSystems =
+        f:
+        nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed (
+          system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system}.extend (
+              self: super: {
+                ocamlPackages = super.ocaml-ng.ocamlPackages_5_6;
+              }
+            );
+          in
+          f pkgs
+        );
+    in
+    {
+      packages = forAllSystems (
+        pkgs:
+        let
+          packages = pkgs.callPackage ./nix { };
+        in
+        {
+          inherit packages;
+          default = packages.reason;
+        }
+      );
+
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.callPackage ./nix/shell.nix {
+          reason = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         };
-        devShells = {
-          default = pkgs.callPackage ./nix/shell.nix {
-            reason = packages.default;
-          };
-          release = pkgs.callPackage ./nix/shell.nix {
-            reason = packages.default;
-            release-mode = true;
-          };
+        release = pkgs.callPackage ./nix/shell.nix {
+          reason = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          release-mode = true;
         };
       });
+    };
 }

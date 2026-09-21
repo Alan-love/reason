@@ -1,32 +1,74 @@
-{ pkgs, nix-filter }:
+{
+  lib,
+  ocamlPackages,
+  doCheck ? false,
+}:
 
-let
-  inherit (pkgs) stdenv lib ocamlPackages;
+rec {
+  reason = ocamlPackages.buildDunePackage {
+    pname = "reason";
+    version = "0.0.1-dev";
 
-in
+    src =
+      let
+        fs = lib.fileset;
+      in
+      fs.toSource {
+        root = ./..;
+        fileset = fs.unions [
+          ../dune-project
+          ../dune
+          ../reason.opam
+          ../scripts
+          ../src
+          ../test
+        ];
+      };
 
-ocamlPackages.buildDunePackage {
-  pname = "reason";
-  version = "0.0.1-dev";
+    inherit doCheck;
 
-  src = nix-filter.filter {
-    root = ./..;
-    include = [ "dune" "dune-project" "reason.opam" "rtop.opam" "scripts" "src" "formatTest" ];
+    nativeBuildInputs = with ocamlPackages; [
+      cppo
+      menhir
+    ];
+    propagatedBuildInputs = with ocamlPackages; [
+      cmdliner
+      merlin-extend
+      menhirSdk
+      menhirLib
+      fix
+      ppxlib_gt_0_37
+      dune-build-info
+    ];
+
   };
 
-  useDune2 = true;
+  rtop = ocamlPackages.buildDunePackage {
+    pname = "rtop";
+    version = "0.0.1-dev";
 
-  propagatedBuildInputs = with ocamlPackages; [
-    merlin-extend
-    menhir
-    menhirSdk
-    menhirLib
-    cppo
-    fix
-    result
-    ppx_derivers
-    ppxlib
-    # ocaml-migrate-parsetree
-  ];
+    src =
+      let
+        fs = lib.fileset;
+      in
+      fs.toSource {
+        root = ./..;
+        fileset = fs.unions [
+          ../dune-project
+          ../dune
+          ../rtop.opam
+          ../scripts
+          ../rtop
+          ../test
+        ];
+      };
 
+    inherit doCheck;
+
+    nativeBuildInputs = with ocamlPackages; [ cppo ];
+    propagatedBuildInputs = [
+      reason
+      ocamlPackages.utop
+    ];
+  };
 }

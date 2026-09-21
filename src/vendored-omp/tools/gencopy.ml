@@ -9,6 +9,9 @@
    version of migration code between two versions of the same type,
    to be then patched manually to perform actual migration. *)
 
+let parse_longident =
+  Longident.parse [@@ocaml.warning "-3"]
+
 let drop_prefix ~prefix s =
   let plen = String.length prefix in
   if plen > String.length s then None
@@ -44,9 +47,9 @@ module Main : sig end = struct
   let may_tuple ?loc tup = function
     | [] -> None
     | [ x ] -> Some x
-    | l -> Some (tup ?loc ?attrs:None l)
+    | l -> Some (tup ?loc ?attrs:None (List.map (fun x -> None, x) l))
 
-  let lid ?(loc = !default_loc) s = mkloc (Longident.parse s) loc
+  let lid ?(loc = !default_loc) s = mkloc (parse_longident s) loc
 
   let constr ?loc ?attrs s args =
     Exp.construct ?loc ?attrs (lid ?loc s) (may_tuple ?loc Exp.tuple args)
@@ -56,7 +59,7 @@ module Main : sig end = struct
   let tuple ?loc ?attrs = function
     | [] -> unit ?loc ?attrs ()
     | [ x ] -> x
-    | xs -> Exp.tuple ?loc ?attrs xs
+    | xs -> Exp.tuple ?loc ?attrs (List.map (fun x -> None, x) xs)
 
   let app ?loc ?attrs f l =
     if l = [] then f
@@ -68,21 +71,43 @@ module Main : sig end = struct
     Exp.let_ ?loc ?attrs (if recursive then Recursive else Nonrecursive) b body
 
   let func ?loc ?attrs l =
-    Exp.function_ ?loc ?attrs (List.map (fun (p, e) -> Exp.case p e) l)
+    Exp.function_ ?loc ?attrs []
+    None
+    (Pfunction_cases ((List.map (fun (p, e) -> Exp.case p e) l), Location.none, []))
 
   let lam ?loc ?attrs ?(label = Label.nolabel) ?default pat exp =
-    Exp.fun_ ?loc ?attrs label default pat exp
+    Exp.function_ ?loc ?attrs
+      [ { pparam_loc = Location.none; pparam_desc = (Pparam_val (label, default, pat)) } ]
+      None
+      (Pfunction_body exp)
 
   let pvar ?(loc = !default_loc) ?attrs s = Pat.var ~loc ?attrs (mkloc s loc)
 
+  let may_ptuple ?loc tup = function
+    | [] -> None
+    | [ x ] -> Some x
+    | l -> Some (tup ?loc ?attrs:None (List.map (fun x -> None, x) l) Closed)
+
   let pconstr ?loc ?attrs s args =
-    Pat.construct ?loc ?attrs (lid ?loc s) (Option.map (fun x -> ([], x)) (may_tuple ?loc Pat.tuple args))
+    Pat.construct
+      ?loc ?attrs
+      (lid ?loc s)
+      (Option.map (fun x -> ([], x)) (may_ptuple ?loc Pat.tuple args))
+
+  let constr_record ?loc ?attrs s fields =
+    Exp.construct ?loc ?attrs (lid ?loc s) (Some (Exp.record fields None))
+
+  let pconstr_record ?loc ?attrs s fields =
+    Pat.construct
+      ?loc ?attrs
+      (lid ?loc s)
+      (Some ([], Pat.record fields Closed))
 
   let selfcall m args = app (evar m) args
 
   (*************************************************************************)
 
-  let env = Env.initial_safe_string
+  let env = Env.initial
 
   let module_mapping = ref []
 
@@ -94,7 +119,7 @@ module Main : sig end = struct
     | _ :: xs -> clean xs
 
   let print_fun s =
-    let lid = Longident.parse s in
+    let lid = parse_longident s in
     let s = Longident.flatten lid |> clean in
     String.concat "_" ("copy" :: s)
 
@@ -105,7 +130,7 @@ module Main : sig end = struct
   let rec gen ty =
     if Hashtbl.mem printed ty then ()
     else
-      let tylid = Longident.parse ty in
+      let tylid = parse_longident ty in
       let td =
         try snd (Env.lookup_type tylid env ~loc:Location.none)
         with Not_found ->
@@ -115,7 +140,7 @@ module Main : sig end = struct
       let prefix, local =
         let open Longident in
         match tylid with
-        | Ldot (m, s) -> (String.concat "." (Longident.flatten m) ^ ".", s)
+        | Ldot (m, s) -> (String.concat "." (Longident.flatten m.txt) ^ ".", s.txt)
         | Lident s -> ("", s)
         | Lapply _ -> assert false
       in
@@ -144,7 +169,7 @@ module Main : sig end = struct
           td.type_params
       in
       let env =
-        List.map2 (fun s t -> (t.id, evar s.txt)) params_in td.type_params
+        List.map2 (fun s t -> (Types.get_id t, evar s.txt)) params_in td.type_params
       in
       let make_result_t tyargs_in tyargs_out =
         Typ.(
@@ -180,6 +205,10 @@ module Main : sig end = struct
         ( (lid (prefix ^ s), pvar s),
           (lid (target_prefix ^ s), tyexpr env ld.ld_type (evar s)) )
       in
+      let inline_field ld =
+        let s = Ident.name ld.ld_id in
+        ((lid s, pvar s), (lid s, tyexpr env ld.ld_type (evar s)))
+      in
       match (td.type_kind, td.type_manifest) with
       | Type_record (l, _), _ ->
           let l = List.map field l in
@@ -194,12 +223,17 @@ module Main : sig end = struct
             | Cstr_tuple tys ->
                 let p, args = gentuple env tys in
                 (pconstr (prefix ^ c) p, constr (target_prefix ^ c) args)
-            | Cstr_record _l ->
-                failwith "Inline records are not yet supported."
+            | Cstr_record l ->
+                let l = List.map inline_field l in
+                ( pconstr_record (prefix ^ c) (List.map fst l),
+                  constr_record (target_prefix ^ c) (List.map snd l) )
           in
           concrete (func (List.map case l))
-      | Type_abstract, Some t -> concrete (tyexpr_fun env t)
-      | Type_abstract, None -> failwith ("Abstract type " ^ ty)
+      | Type_abstract _, Some t -> concrete (tyexpr_fun env t)
+      | Type_abstract _, None -> failwith ("Abstract type " ^ ty)
+      | Type_external _, _ ->
+          Format.eprintf "** External types are not yet supported %s@." ty;
+          ()
       | Type_open, _ ->
           Format.eprintf "** Open types are not yet supported %s@." ty;
           ()
@@ -211,19 +245,28 @@ module Main : sig end = struct
     in
     List.split (List.mapi arg tl)
 
+  and genttuple env tl =
+    let arg i (lbl, t) =
+      let x = Printf.sprintf "x%i" i in
+      ((lbl, pvar x), tyexpr env t (evar x))
+    in
+    List.split (List.mapi arg tl)
+
   and tyexpr env ty x =
-    match ty.desc with
+    match Types.get_desc ty with
     | Tvar _ -> (
-      match List.assoc ty.id env with
+      match List.assoc (Types.get_id ty) env with
       | f -> app f [ x ]
       | exception Not_found -> failwith "Existentials not supported" )
     | Ttuple tl ->
-        let p, e = gentuple env tl in
-        let_in [ Vb.mk (Pat.tuple p) x ] (tuple e)
+        let p, e = genttuple env (tl : (_ * _ ) list) in
+        let_in [ Vb.mk (Pat.tuple p Closed) x ] (tuple e)
     | Tconstr (path, [ t ], _) when Path.same path Predef.path_list ->
         app (evar "List.map") [ tyexpr_fun env t; x ]
     | Tconstr (path, [ t ], _) when Path.same path Predef.path_array ->
         app (evar "Array.map") [ tyexpr_fun env t; x ]
+    | Tconstr (path, [ ], _) when Path.same path Predef.path_floatarray ->
+        app (evar "Float.Array.map") [ tyexpr_ffun "float"; x ]
     | Tconstr (path, [ t ], _) when Path.same path Predef.path_option ->
         app (evar "Option.map") [ tyexpr_fun env t; x ]
     | Tconstr (path, [], _)
@@ -248,42 +291,22 @@ module Main : sig end = struct
         Format.eprintf "** Cannot deal with type %a@." Printtyp.type_expr ty;
         x
 
+  and tyexpr_ffun _ty = lam (pvar "x") (evar "x")
   and tyexpr_fun env ty = lam (pvar "x") (tyexpr env ty (evar "x"))
 
   let simplify =
     (* (fun x -> <expr> x) ====> <expr> *)
     let open Ast_mapper in
     let super = default_mapper in
-    let expr this e =
-      let e = super.expr this e in
-      let open Longident in
-      let open Parsetree in
-      match e.pexp_desc with
-      | Pexp_fun
-          ( Asttypes.Nolabel,
-            None,
-            { ppat_desc = Ppat_var { txt = id; _ }; _ },
-            { pexp_desc =
-                Pexp_apply
-                  ( f,
-                    [ ( Asttypes.Nolabel,
-                        { pexp_desc = Pexp_ident { txt = Lident id2; _ }; _ }
-                      )
-                    ] )
-            ; _
-            } )
-        when id = id2 ->
-          f
-      | _ -> e
-    in
     let value_binding this (vb : Parsetree.value_binding) =
       let pvb_pat = this.pat this vb.pvb_pat in
       let pvb_expr = super.expr this vb.pvb_expr in
       let pvb_attributes = this.attributes this vb.pvb_attributes in
       let pvb_loc = this.location this vb.pvb_loc in
-      { Parsetree.pvb_loc; pvb_attributes; pvb_expr; pvb_pat }
+      let pvb_constraint = vb.pvb_constraint in
+      { Parsetree.pvb_loc; pvb_attributes; pvb_expr; pvb_pat; pvb_constraint }
     in
-    { super with expr; value_binding }
+    { super with value_binding }
 
   let add_mapping s =
     let i =
@@ -300,7 +323,7 @@ module Main : sig end = struct
     [ ( "-I",
         String
           (fun s ->
-            Load_path.add_dir (Misc.expand_directory Config.standard_library s)
+            Load_path.add_dir ~hidden:false (Misc.expand_directory Config.standard_library s)
             ),
         "<dir> Add <dir> to the list of include directories" );
       ( "-map",
@@ -312,7 +335,7 @@ module Main : sig end = struct
   let usage = Printf.sprintf "%s [options] <type names>\n" Sys.argv.(0)
 
   let main () =
-    Load_path.init [ Config.standard_library ];
+    Load_path.init ~auto_include:Compmisc.auto_include ~visible:[ Config.standard_library ] ~hidden:[];
     Arg.parse (Arg.align args) gen usage;
     let from_, to_ =
       match !module_mapping with
@@ -325,10 +348,10 @@ module Main : sig end = struct
       [ Str.module_
           (Mb.mk
              (mkloc (Some "From") Location.none)
-             (Mod.ident (mkloc (Longident.parse from_) Location.none)));
+             (Mod.ident (mkloc (parse_longident from_) Location.none)));
         Str.module_
           (Mb.mk (mkloc (Some "To") Location.none)
-             (Mod.ident (mkloc (Longident.parse to_) Location.none)));
+             (Mod.ident (mkloc (parse_longident to_) Location.none)));
         Str.value Recursive !meths
       ]
     in
@@ -341,3 +364,10 @@ module Main : sig end = struct
       Format.eprintf "%a@?" Errors.report_error exn;
       exit 1
 end
+
+(* ../../_build/default/src/vendored-omp/tools/gencopy.exe -I . -I src/ -I +compiler-libs -map Ast_403:Ast_402 Ast_403.Outcometree.{out_phrase,out_type_extension} > src/migrate_parsetree_403_402_migrate.ml *)
+(* ../../_build/default/src/vendored-omp/tools/gencopy.exe -I . -I src/ -I +compiler-libs -map Ast_402:Ast_403  Ast_402.Outcometree.{out_phrase,out_type_extension} > src/migrate_parsetree_402_403_migrate.ml *)
+
+
+(* ../../_build/default/src/vendored-omp/tools/gencopy.exe -I . -I src/ -I +compiler-libs -map Ast_54:Ast_53 Ast_54.Outcometree.{out_phrase,out_type_extension} > src/migrate_parsetree_54_53_migrate.ml *)
+(* ../../_build/default/src/vendored-omp/tools/gencopy.exe -I . -I src/ -I +compiler-libs -map Ast_414:Ast_500  Ast_414.Outcometree.{out_phrase,out_type_extension} > src/migrate_parsetree_414_500_migrate.ml *)

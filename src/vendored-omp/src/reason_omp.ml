@@ -14,22 +14,19 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(*$ #use "src/cinaps_helpers" $*)
+(*$
+  open StdLabels
+  open Printf
+  open Cinaps_helpers
+$*)
 
-(* Shared definitions.
-   Mostly errors about features missing in older versions. *)
+(* Shared definitions. Mostly errors about features missing in older versions. *)
 module Def = Migrate_parsetree_def
 
 (* Copy of OCaml parsetrees *)
 (*$foreach_version (fun suffix _ ->
     printf "module Ast_%s = Ast_%s\n" suffix suffix
   )*)
-module Ast_402 = Ast_402
-module Ast_403 = Ast_403
-module Ast_404 = Ast_404
-module Ast_405 = Ast_405
-module Ast_406 = Ast_406
-module Ast_407 = Ast_407
 module Ast_408 = Ast_408
 module Ast_409 = Ast_409
 module Ast_410 = Ast_410
@@ -38,28 +35,19 @@ module Ast_412 = Ast_412
 module Ast_413 = Ast_413
 module Ast_414 = Ast_414
 module Ast_500 = Ast_500
+module Ast_51 = Ast_51
+module Ast_52 = Ast_52
+module Ast_53 = Ast_53
+module Ast_54 = Ast_54
+module Ast_55 = Ast_55
+module Ast_56 = Ast_56
 (*$*)
-
-(* A module for marshalling/unmarshalling arbitrary versions of Asts *)
-module Ast_io = Migrate_parsetree_ast_io
 
 (* Manual migration between versions *)
 (*$foreach_version_pair (fun x y ->
     printf "module Migrate_%s_%s = Migrate_parsetree_%s_%s\n" x y x y;
     printf "module Migrate_%s_%s = Migrate_parsetree_%s_%s\n" y x y x;
   )*)
-module Migrate_402_403 = Migrate_parsetree_402_403
-module Migrate_403_402 = Migrate_parsetree_403_402
-module Migrate_403_404 = Migrate_parsetree_403_404
-module Migrate_404_403 = Migrate_parsetree_404_403
-module Migrate_404_405 = Migrate_parsetree_404_405
-module Migrate_405_404 = Migrate_parsetree_405_404
-module Migrate_405_406 = Migrate_parsetree_405_406
-module Migrate_406_405 = Migrate_parsetree_406_405
-module Migrate_406_407 = Migrate_parsetree_406_407
-module Migrate_407_406 = Migrate_parsetree_407_406
-module Migrate_407_408 = Migrate_parsetree_407_408
-module Migrate_408_407 = Migrate_parsetree_408_407
 module Migrate_408_409 = Migrate_parsetree_408_409
 module Migrate_409_408 = Migrate_parsetree_409_408
 module Migrate_409_410 = Migrate_parsetree_409_410
@@ -74,6 +62,18 @@ module Migrate_413_414 = Migrate_parsetree_413_414
 module Migrate_414_413 = Migrate_parsetree_414_413
 module Migrate_414_500 = Migrate_parsetree_414_500
 module Migrate_500_414 = Migrate_parsetree_500_414
+module Migrate_500_51 = Migrate_parsetree_500_51
+module Migrate_51_500 = Migrate_parsetree_51_500
+module Migrate_51_52 = Migrate_parsetree_51_52
+module Migrate_52_51 = Migrate_parsetree_52_51
+module Migrate_52_53 = Migrate_parsetree_52_53
+module Migrate_53_52 = Migrate_parsetree_53_52
+module Migrate_53_54 = Migrate_parsetree_53_54
+module Migrate_54_53 = Migrate_parsetree_54_53
+module Migrate_54_55 = Migrate_parsetree_54_55
+module Migrate_55_54 = Migrate_parsetree_55_54
+module Migrate_55_56 = Migrate_parsetree_55_56
+module Migrate_56_55 = Migrate_parsetree_56_55
 (*$*)
 
 (* An abstraction of OCaml compiler versions *)
@@ -85,12 +85,6 @@ module type OCaml_version = Versions.OCaml_version
 (*$foreach_version (fun suffix _ ->
     printf "module OCaml_%s = Versions.OCaml_%s\n" suffix suffix
   )*)
-module OCaml_402 = Versions.OCaml_402
-module OCaml_403 = Versions.OCaml_403
-module OCaml_404 = Versions.OCaml_404
-module OCaml_405 = Versions.OCaml_405
-module OCaml_406 = Versions.OCaml_406
-module OCaml_407 = Versions.OCaml_407
 module OCaml_408 = Versions.OCaml_408
 module OCaml_409 = Versions.OCaml_409
 module OCaml_410 = Versions.OCaml_410
@@ -99,6 +93,13 @@ module OCaml_412 = Versions.OCaml_412
 module OCaml_413 = Versions.OCaml_413
 module OCaml_414 = Versions.OCaml_414
 module OCaml_500 = Versions.OCaml_500
+module OCaml_51 = Versions.OCaml_51
+module OCaml_52 = Versions.OCaml_52
+module OCaml_53 = Versions.OCaml_53
+module OCaml_54 = Versions.OCaml_54
+module OCaml_55 = Versions.OCaml_55
+module OCaml_56 = Versions.OCaml_56
+
 (*$*)
 module OCaml_current = Versions.OCaml_current
 
@@ -106,23 +107,22 @@ module OCaml_current = Versions.OCaml_current
    migrating from one to the other. *)
 module Convert = Versions.Convert
 
-(* A [Parse] module that migrate ASTs to the desired version of an AST *)
-module Parse = Migrate_parsetree_parse
-
-(* Entrypoints for registering rewriters and making a ppx binary *)
-module Driver = Migrate_parsetree_driver
-
 (* Aliases for compiler-libs modules that might be shadowed *)
 module Compiler_libs = struct
   module Location = Location
   module Longident = Longident
 
-  module type Asttypes = module type of struct include Asttypes end
+  module type Asttypes = module type of struct
+    include Asttypes
+  end
+
   module rec Asttypes : Asttypes = Asttypes
 
-  module type Parsetree = module type of struct include Parsetree end
-  module rec Parsetree : Parsetree = Parsetree
+  module type Parsetree = module type of struct
+    include Parsetree
+  end
 
+  module rec Parsetree : Parsetree = Parsetree
   module Docstrings = Docstrings
   module Ast_helper = Ast_helper
   module Ast_mapper = Ast_mapper
